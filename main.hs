@@ -201,3 +201,297 @@ itemMaisMovimentado logs =
       take 1 $ filter (not . null) $ words det
     -- Compara e retorna item com maior contagem
     maiorContagem x y = if snd x > snd y then x else y
+-- ============================================================================
+-- MÓDULO DE I/O E PERSISTÊNCIA (Aluno 3: I/O e Persistência)
+-- ============================================================================
+
+-- | Nome do arquivo de persistência do inventário
+arquivoInventario :: FilePath
+arquivoInventario = "Inventario.dat"
+
+-- | Nome do arquivo de log de auditoria
+arquivoLog :: FilePath
+arquivoLog = "Auditoria.log"
+
+-- | Cria inventário inicial com 10 itens para teste
+criarInventarioInicial :: IO Inventario
+criarInventarioInicial = do
+  time <- getCurrentTime
+  let itensIniciais = 
+        [ Item "T001" "Teclado_Mecanico" 15 "Perifericos"
+        , Item "M001" "Mouse_Optico" 25 "Perifericos"
+        , Item "MON01" "Monitor_24pol" 8 "Perifericos"
+        , Item "CPU01" "Processador_i7" 12 "Hardware"
+        , Item "RAM01" "Memoria_16GB" 30 "Hardware"
+        , Item "SSD01" "SSD_500GB" 20 "Armazenamento"
+        , Item "HDD01" "HDD_2TB" 10 "Armazenamento"
+        , Item "CAD01" "Cadeira_Gamer" 5 "Mobiliario"
+        , Item "MES01" "Mesa_Escritorio" 3 "Mobiliario"
+        , Item "CAB01" "Cabo_HDMI_2m" 50 "Acessorios"
+        ]
+  
+  let inventario = Map.fromList [(itemID item, item) | item <- itensIniciais]
+  
+  -- Salva o inventário inicial
+  salvarInventario inventario
+  
+  -- Cria logs para cada item adicionado
+  mapM_ (\item -> 
+    let logEntry = LogEntry time Add 
+                   ("Adicionado: " ++ itemID item ++ " - " ++ nome item ++ 
+                    " (" ++ show (quantidade item) ++ ")") 
+                   Sucesso
+    in adicionarLog logEntry) itensIniciais
+  
+  putStrLn "10 itens iniciais criados automaticamente!"
+  return inventario
+
+-- | Carrega o inventário do disco usando catch para tratar exceções
+-- Retorna inventário vazio se arquivo não existir
+carregarInventario :: IO Inventario
+carregarInventario = do
+  catch tentarCarregar tratarErro
+  where
+    tentarCarregar = do
+      conteudo <- readFile arquivoInventario
+      -- Força avaliação COMPLETA e ESTRITA do conteúdo
+      let !conteudoAvaliado = conteudo
+      length conteudoAvaliado `seq` return ()
+      let conteudoLimpo = trim conteudoAvaliado
+      if null conteudoLimpo
+        then return Map.empty
+        else do
+          let !resultado = read conteudoLimpo :: Inventario
+          return resultado
+    
+    tratarErro :: SomeException -> IO Inventario
+    tratarErro _ = return Map.empty
+    
+    trim = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+
+-- | Carrega os logs de auditoria usando catch
+-- Lê formato append-only (uma entrada por linha)
+carregarLogs :: IO [LogEntry]
+carregarLogs = do
+  catch tentarCarregar tratarErro
+  where
+    tentarCarregar = do
+      conteudo <- readFile arquivoLog
+      -- Força leitura COMPLETA e ESTRITA do arquivo
+      let !conteudoAvaliado = conteudo
+      length conteudoAvaliado `seq` return ()
+      let linhas = lines conteudoAvaliado
+          -- Filtra linhas vazias e converte para LogEntry
+          logsValidos = [read linha :: LogEntry | 
+                        linha <- linhas, not (null linha)]
+      -- Força avaliação de toda a lista
+      length logsValidos `seq` return logsValidos
+    
+    tratarErro :: SomeException -> IO [LogEntry]
+    tratarErro _ = return []
+
+-- | Salva o inventário no disco usando writeFile
+-- Sobrescreve arquivo anterior
+salvarInventario :: Inventario -> IO ()
+salvarInventario inv = do
+  catch operacao tratarErro
+  where
+    operacao = writeFile arquivoInventario (show inv)
+    tratarErro e = 
+      putStrLn $ "Erro ao salvar inventário: " ++ show (e :: SomeException)
+
+-- | Adiciona entrada ao log usando appendFile (modo append-only)
+-- Cada entrada em uma nova linha
+adicionarLog :: LogEntry -> IO ()
+adicionarLog entry = do
+  catch operacao tratarErro
+  where
+    operacao = appendFile arquivoLog (show entry ++ "\n")
+    tratarErro e = 
+      putStrLn $ "Erro ao salvar log: " ++ show (e :: SomeException)
+
+-- | Exibe o inventário atual formatado
+listarInventario :: Inventario -> IO ()
+listarInventario inv = do
+  putStrLn "\n=== INVENTARIO ATUAL ==="
+  if Map.null inv
+    then putStrLn "Inventario vazio."
+    else mapM_ exibirItem (Map.elems inv)
+  putStrLn "========================\n"
+  where
+    exibirItem item = 
+      let
+        idStr = "ID: " ++ itemID item
+        nomeStr = " | Nome: " ++ nome item
+        qtdStr = " | Qtd: " ++ show (quantidade item)
+        catStr = " | Cat: " ++ categoria item
+      in
+        putStrLn $ idStr ++ nomeStr ++ qtdStr ++ catStr
+
+-- | Processa comando do usuário e atualiza o inventário
+processarComando :: String -> Inventario -> IO Inventario
+processarComando cmd inv = do
+  time <- getCurrentTime
+  let tokens = words cmd
+  case tokens of
+    -- Comando: add <id> <nome> <qtd> <categoria>
+    ["add", iid, nom, qtdStr, cat] ->
+      case reads qtdStr :: [(Int, String)] of
+        [(qtd, "")] ->
+          case addItem time iid nom qtd cat inv of
+            Right (novoInv, logEntry) -> do
+              salvarInventario novoInv
+              adicionarLog logEntry
+              putStrLn "✓ Item adicionado com sucesso!"
+              return novoInv
+            Left erro -> do
+              adicionarLog (criarLogFalha time Add erro)
+              putStrLn $ "✗ Erro: " ++ erro
+              return inv
+        _ -> do
+          putStrLn "✗ Quantidade invalida"
+          return inv
+    
+    -- Comando: remove <id> <qtd>
+    ["remove", iid, qtdStr] ->
+      case reads qtdStr :: [(Int, String)] of
+        [(qtd, "")] ->
+          case removeItem time iid qtd inv of
+            Right (novoInv, logEntry) -> do
+              salvarInventario novoInv
+              adicionarLog logEntry
+              putStrLn "✓ Item removido com sucesso!"
+              return novoInv
+            Left erro -> do
+              adicionarLog (criarLogFalha time Remove erro)
+              putStrLn $ "✗ Erro: " ++ erro
+              return inv
+        _ -> do
+          putStrLn "✗ Quantidade invalida"
+          return inv
+    
+    -- Comando: update <id> <nova_qtd>
+    ["update", iid, qtdStr] ->
+      case reads qtdStr :: [(Int, String)] of
+        [(qtd, "")] ->
+          case updateQty time iid qtd inv of
+            Right (novoInv, logEntry) -> do
+              salvarInventario novoInv
+              adicionarLog logEntry
+              putStrLn "✓ Quantidade atualizada com sucesso!"
+              return novoInv
+            Left erro -> do
+              adicionarLog (criarLogFalha time Update erro)
+              putStrLn $ "✗ Erro: " ++ erro
+              return inv
+        _ -> do
+          putStrLn "✗ Quantidade invalida"
+          return inv
+    
+    -- Comando: list
+    ["list"] -> do
+      listarInventario inv
+      adicionarLog (LogEntry time ListItems "Listagem de inventário" Sucesso)
+      return inv
+    
+    -- Comando: report
+    ["report"] -> do
+      logs <- carregarLogs
+      gerarRelatorio logs
+      adicionarLog (LogEntry time Report "Relatório gerado" Sucesso)
+      return inv
+      where
+        gerarRelatorio logs = do
+          putStrLn "\n=== RELATORIO DE ANALISE ==="
+          putStrLn $ "Total de operacoes: " ++ show (length logs)
+          
+          let erros = logsDeErro logs
+          putStrLn $ "Total de erros: " ++ show (length erros)
+          
+          putStrLn "\n--- Logs de Erro ---"
+          if null erros
+            then putStrLn "Nenhum erro registrado."
+            else mapM_ (putStrLn . formatarLog) erros
+          
+          case itemMaisMovimentado logs of
+            Nothing -> putStrLn "\nNenhum item movimentado."
+            Just (item, count) -> 
+              putStrLn $ "\nItem mais movimentado: " ++ item ++ 
+                        " (" ++ show count ++ " operacoes)"
+          
+          putStrLn "============================\n"
+        
+        formatarLog (LogEntry t ac det st) =
+          show t ++ " | " ++ show ac ++ " | " ++ det ++ " | " ++ show st
+    
+    -- Comando: help
+    ["help"] -> do
+      exibirAjuda
+      return inv
+    
+    -- Comando: exit
+    ["exit"] -> return inv
+    
+    -- Comando inválido
+    _ -> do
+      putStrLn "✗ Comando invalido. Digite 'help' para ver os comandos disponiveis."
+      return inv
+
+-- | Exibe menu de ajuda com todos os comandos disponíveis
+exibirAjuda :: IO ()
+exibirAjuda = do
+  putStrLn "\n=== COMANDOS DISPONIVEIS ==="
+  putStrLn "add <id> <nome> <quantidade> <categoria>  - Adiciona um item"
+  putStrLn "remove <id> <quantidade>                   - Remove quantidade de um item"
+  putStrLn "update <id> <nova_quantidade>              - Atualiza quantidade"
+  putStrLn "list                                       - Lista todos os itens"
+  putStrLn "report                                     - Gera relatorio de analise"
+  putStrLn "help                                       - Exibe esta ajuda"
+  putStrLn "exit                                       - Sai do programa"
+  putStrLn "============================\n"
+
+-- | Loop principal de interação com o usuário
+-- Lê comandos e atualiza o inventário recursivamente
+loop :: Inventario -> IO ()
+loop inv = do
+  putStr "inventario> "
+  cmd <- getLine
+  case cmd of
+    "exit" -> putStrLn "Encerrando sistema..."
+    _ -> do
+      novoInv <- processarComando cmd inv
+      loop novoInv
+
+-- ============================================================================
+-- PONTO DE ENTRADA PRINCIPAL
+-- ============================================================================
+
+-- | Função principal que inicializa o sistema
+-- Carrega estado anterior e inicia loop de interação
+main :: IO ()
+main = do
+  -- Configura buffering para melhor interação no terminal
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stdin LineBuffering
+  
+  -- Exibe cabeçalho
+  putStrLn "==================================="
+  putStrLn "  SISTEMA DE INVENTARIO - HASKELL"
+  putStrLn "==================================="
+  
+  -- Carrega estado anterior (usa catch internamente)
+  putStrLn "Carregando dados..."
+  inv <- carregarInventario
+  
+  -- Se inventário estiver vazio, cria itens iniciais
+  invFinal <- if Map.null inv
+              then criarInventarioInicial
+              else return inv
+  
+  putStrLn $ "Inventario carregado: " ++ show (Map.size invFinal) ++ " itens"
+  
+  -- Instrução inicial
+  putStrLn "Digite 'help' para ver os comandos disponiveis.\n"
+  
+  -- Inicia loop principal
+  loop invFinal
