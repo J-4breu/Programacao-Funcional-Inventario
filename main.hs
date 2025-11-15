@@ -44,6 +44,128 @@ data LogEntry = LogEntry
   , detalhes :: String      -- ^ Descrição detalhada
   , status :: StatusLog     -- ^ Resultado da operação
   } deriving (Show, Read, Eq)
+
+  -- ============================================================================
+-- LÓGICA DE NEGÓCIO PURA (Aluno 2: Lógica de Negócio)
+-- ============================================================================
+
+-- | Tipo para resultado de operação: novo inventário e entrada de log
+type ResultadoOperacao = (Inventario, LogEntry)
+
+-- | Adiciona um item ao inventário
+-- Retorna Either com erro ou o novo estado e log
+addItem :: UTCTime -> String -> String -> Int -> String -> Inventario 
+        -> Either String ResultadoOperacao
+addItem time iid nom qtd cat inv
+  | qtd <= 0 = Left "Quantidade deve ser positiva"
+  | Map.member iid inv = Left mensagemDuplicado
+  | otherwise = Right (novoInv, logEntry)
+  where
+    -- Cria novo item com os dados fornecidos
+    novoItem = Item iid nom qtd cat
+    
+    -- Insere item no inventário
+    novoInv = Map.insert iid novoItem inv
+    
+    -- Mensagem para item duplicado (sem acentos)
+    mensagemDuplicado = "Item com ID " ++ iid ++ " ja existe"
+    
+    -- Detalhes para o log
+    detalhesMsg = "Adicionado: " ++ iid ++ " - " ++ nom ++ " (" ++ show qtd ++ ")"
+    
+    -- Entrada de log de sucesso
+    logEntry = LogEntry time Add detalhesMsg Sucesso
+
+-- | Remove uma quantidade de um item do inventário
+-- Valida estoque suficiente antes de remover
+removeItem :: UTCTime -> String -> Int -> Inventario 
+           -> Either String ResultadoOperacao
+removeItem time iid qtdRemover inv =
+  case Map.lookup iid inv of
+    Nothing -> Left $ "Item " ++ iid ++ " nao encontrado"
+    Just item ->
+      let
+        qtdAtual = quantidade item
+        validaQuantidade
+          | qtdRemover <= 0 = Left "Quantidade a remover deve ser positiva"
+          | qtdAtual < qtdRemover = Left mensagemEstoqueInsuficiente
+          | otherwise = Right ()
+          where
+            mensagemEstoqueInsuficiente = 
+              "Estoque insuficiente. Disponivel: " ++ show qtdAtual
+      in
+        case validaQuantidade of
+          Left erro -> Left erro
+          Right () ->
+            let
+              novaQtd = qtdAtual - qtdRemover
+              itemAtualizado = item { quantidade = novaQtd }
+              -- Remove item se quantidade chegar a zero
+              novoInv = if novaQtd == 0
+                       then Map.delete iid inv
+                       else Map.insert iid itemAtualizado inv
+              detalhesMsg = "Removido: " ++ iid ++ " - " ++ 
+                           show qtdRemover ++ " unidades"
+              logEntry = LogEntry time Remove detalhesMsg Sucesso
+            in
+              Right (novoInv, logEntry)
+
+-- | Atualiza a quantidade de um item existente
+-- Remove o item se a nova quantidade for zero
+updateQty :: UTCTime -> String -> Int -> Inventario 
+          -> Either String ResultadoOperacao
+updateQty time iid novaQtd inv =
+  case Map.lookup iid inv of
+    Nothing -> Left ("Item " ++ iid ++ " nao encontrado")
+    Just item ->
+      if novaQtd < 0
+        then Left "Quantidade nao pode ser negativa"
+        else Right (novoInv, logEntry)
+      where
+        itemAtualizado = item { quantidade = novaQtd }
+        -- Remove do inventário se quantidade for zero
+        novoInv = if novaQtd == 0
+                 then Map.delete iid inv
+                 else Map.insert iid itemAtualizado inv
+        detalhesMsg = "Atualizado: " ++ iid ++ 
+                     " - nova quantidade: " ++ show novaQtd
+        logEntry = LogEntry time Update detalhesMsg Sucesso
+
+-- | Cria entrada de log para operação que falhou
+-- Usa mensagens sem acentos para evitar problemas de encoding
+criarLogFalha :: UTCTime -> AcaoLog -> String -> LogEntry
+criarLogFalha time ac msg = LogEntry time ac msgSemAcentos (Falha msgSemAcentos)
+  where
+    msgSemAcentos = removerAcentos msg
+    
+    -- Remove acentos e caracteres especiais para evitar problemas de encoding
+    removerAcentos :: String -> String
+    removerAcentos = map substituir
+      where
+        substituir 'á' = 'a'
+        substituir 'é' = 'e'
+        substituir 'í' = 'i'
+        substituir 'ó' = 'o'
+        substituir 'ú' = 'u'
+        substituir 'ã' = 'a'
+        substituir 'õ' = 'o'
+        substituir 'â' = 'a'
+        substituir 'ê' = 'e'
+        substituir 'ô' = 'o'
+        substituir 'ç' = 'c'
+        substituir 'Á' = 'A'
+        substituir 'É' = 'E'
+        substituir 'Í' = 'I'
+        substituir 'Ó' = 'O'
+        substituir 'Ú' = 'U'
+        substituir 'Ã' = 'A'
+        substituir 'Õ' = 'O'
+        substituir 'Â' = 'A'
+        substituir 'Ê' = 'E'
+        substituir 'Ô' = 'O'
+        substituir 'Ç' = 'C'
+        substituir c = c
+        
 -- ============================================================================
 -- FUNÇÕES DE ANÁLISE DE LOGS (Aluno 4: Validação e Documentação)
 -- ============================================================================
